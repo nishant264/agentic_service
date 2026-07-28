@@ -61,3 +61,54 @@ except ImportError:
     pass  # agents library not installed
 except Exception:
     pass  # Graceful fallback for any other incompatibility
+
+# ── Step 3: Fix datamodel-code-generator for Python 3.14 ────────────────
+# Python 3.14 isn't in datamodel_code_generator's PythonVersion enum yet.
+# Patch the module before agency-swarm imports it.
+import sys as _sys
+
+if _sys.version_info[:2] == (3, 14):
+    try:
+        import pathlib
+        import types
+        import importlib
+
+        # Parent package imports fine on its own
+        import datamodel_code_generator as _dcg
+
+        _model_init = (
+            pathlib.Path(_dcg.__file__).parent / "model" / "__init__.py"
+        )
+        if _model_init.exists():
+            _source = _model_init.read_text()
+
+            # Append a _missing_ handler so PythonVersion("3.14") doesn't crash
+            _source += """
+try:
+    PythonVersion("3.14")
+except ValueError:
+    _orig_missing = getattr(PythonVersion, "_missing_", None)
+    @classmethod
+    def _missing_(cls, value):
+        # Return the first member as fallback for unknown versions
+        for member in cls:
+            return member
+        return None
+    PythonVersion._missing_ = _missing_
+    # Also register common version strings
+    for _v in ("3.14", "3.15", "3.16"):
+        if _v not in PythonVersion._value2member_map_:
+            try:
+                PythonVersion._value2member_map_[_v] = PythonVersion("3.12")
+            except Exception:
+                pass
+"""
+
+            _mod = types.ModuleType("datamodel_code_generator.model")
+            _mod.__file__ = str(_model_init)
+            _mod.__package__ = "datamodel_code_generator"
+            _mod.__path__ = [str(_model_init.parent)]
+            exec(compile(_source, str(_model_init), "exec"), _mod.__dict__)
+            _sys.modules["datamodel_code_generator.model"] = _mod
+    except Exception:
+        pass  # Graceful fallback — error will surface later
