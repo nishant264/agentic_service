@@ -77,53 +77,50 @@ if _sys.version_info[:2] == (3, 14):
             if fullname != "datamodel_code_generator.model":
                 return None
 
-            for _p in _sys.path:
-                _init = _pl.Path(_p) / "datamodel_code_generator" / "model" / "__init__.py"
-                if _init.exists():
-                    _src = _init.read_text()
+            # Use the standard path finder to get a fully-formed spec
+            spec = _mach.PathFinder.find_spec(fullname, _path, _target)
+            if spec is None or not spec.origin:
+                return None
 
-                    # Inject _missing_ into the PythonVersion class body
-                    # Find "class PythonVersion(" and add _missing_ right before
-                    # the next top-level statement
-                    _cls_marker = "class PythonVersion("
-                    _cls_idx = _src.find(_cls_marker)
-                    if _cls_idx >= 0:
-                        _after_header = _src.find("\n", _cls_idx) + 1
-                        # Find next line that starts at column 0 (end of class body)
-                        _rest = _src[_after_header:]
-                        _next_top = -1
-                        for _i, _ch in enumerate(_rest):
-                            if _ch == "\n" and _i + 1 < len(_rest) and _rest[_i + 1] not in (" ", "\t", "\n", "#"):
-                                _next_top = _after_header + _i + 1
-                                break
-                        if _next_top > 0:
-                            _inject = (
-                                "\n"
-                                "    @classmethod\n"
-                                '    def _missing_(cls, value):\n'
-                                "        for member in cls:\n"
-                                "            return member\n"
-                                "        return None\n"
-                                "\n"
-                            )
-                            _src = _src[:_next_top] + _inject + _src[_next_top:]
+            _init = _pl.Path(spec.origin)
+            _src = _init.read_text()
 
-                    # Wrap the crashing DEFAULT_TARGET line in try/except
-                    _old_line = 'DEFAULT_TARGET_PYTHON_VERSION = PythonVersion(f"{sys.version_info.major}.{sys.version_info.minor}")'
-                    _new_block = (
-                        "try:\n"
-                        f"    {_old_line}\n"
-                        'except ValueError:\n'
-                        "    DEFAULT_TARGET_PYTHON_VERSION = '3.12'\n"
+            # Inject _missing_ into the PythonVersion class body
+            _cls_marker = "class PythonVersion("
+            _cls_idx = _src.find(_cls_marker)
+            if _cls_idx >= 0:
+                _after_header = _src.find("\n", _cls_idx) + 1
+                _rest = _src[_after_header:]
+                _next_top = -1
+                for _i, _ch in enumerate(_rest):
+                    if _ch == "\n" and _i + 1 < len(_rest) and _rest[_i + 1] not in (" ", "\t", "\n", "#"):
+                        _next_top = _after_header + _i + 1
+                        break
+                if _next_top > 0:
+                    _inject = (
+                        "\n"
+                        "    @classmethod\n"
+                        '    def _missing_(cls, value):\n'
+                        "        for member in cls:\n"
+                        "            return member\n"
+                        "        return None\n"
+                        "\n"
                     )
-                    _src = _src.replace(_old_line, _new_block)
+                    _src = _src[:_next_top] + _inject + _src[_next_top:]
 
-                    return _mach.ModuleSpec(
-                        fullname,
-                        _PatchedLoader(_init, _src),
-                        is_package=True,
-                    )
-            return None
+            # Wrap the crashing DEFAULT_TARGET line in try/except
+            _old_line = 'DEFAULT_TARGET_PYTHON_VERSION = PythonVersion(f"{sys.version_info.major}.{sys.version_info.minor}")'
+            _new_block = (
+                "try:\n"
+                f"    {_old_line}\n"
+                'except ValueError:\n'
+                "    DEFAULT_TARGET_PYTHON_VERSION = '3.12'\n"
+            )
+            _src = _src.replace(_old_line, _new_block)
+
+            # Use the original spec but with a patched loader
+            spec.loader = _PatchedLoader(_init, _src)
+            return spec
 
     class _PatchedLoader(_abc.Loader):
         def __init__(self, path, patched_source):
