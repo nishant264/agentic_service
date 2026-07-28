@@ -64,51 +64,47 @@ except Exception:
 
 # ── Step 3: Fix datamodel-code-generator for Python 3.14 ────────────────
 # Python 3.14 isn't in datamodel_code_generator's PythonVersion enum yet.
-# Patch the module before agency-swarm imports it.
+# We scan sys.path for the module file and pre-load a patched version.
 import sys as _sys
 
 if _sys.version_info[:2] == (3, 14):
+    _found = False
     try:
-        import pathlib
-        import types
-        import importlib
+        import pathlib as _pathlib
+        import types as _types
 
-        # Parent package imports fine on its own
-        import datamodel_code_generator as _dcg
-
-        _model_init = (
-            pathlib.Path(_dcg.__file__).parent / "model" / "__init__.py"
-        )
-        if _model_init.exists():
-            _source = _model_init.read_text()
-
-            # Append a _missing_ handler so PythonVersion("3.14") doesn't crash
-            _source += """
+        for _p in _sys.path:
+            _model_init = (
+                _pathlib.Path(_p)
+                / "datamodel_code_generator"
+                / "model"
+                / "__init__.py"
+            )
+            if _model_init.exists():
+                _src = _model_init.read_text()
+                # Add a _missing_ hook so PythonVersion("3.14") succeeds
+                _src += """
 try:
     PythonVersion("3.14")
 except ValueError:
-    _orig_missing = getattr(PythonVersion, "_missing_", None)
-    @classmethod
-    def _missing_(cls, value):
-        # Return the first member as fallback for unknown versions
-        for member in cls:
-            return member
-        return None
-    PythonVersion._missing_ = _missing_
-    # Also register common version strings
-    for _v in ("3.14", "3.15", "3.16"):
-        if _v not in PythonVersion._value2member_map_:
-            try:
-                PythonVersion._value2member_map_[_v] = PythonVersion("3.12")
-            except Exception:
-                pass
+    if not hasattr(PythonVersion, "_missing_"):
+        @classmethod
+        def _missing_(cls, value):
+            for member in cls:
+                return member
+            return None
+        PythonVersion._missing_ = _missing_
+        PythonVersion._value2member_map_["3.14"] = PythonVersion("3.12")
+        PythonVersion._member_names_.append("3_14")
 """
 
-            _mod = types.ModuleType("datamodel_code_generator.model")
-            _mod.__file__ = str(_model_init)
-            _mod.__package__ = "datamodel_code_generator"
-            _mod.__path__ = [str(_model_init.parent)]
-            exec(compile(_source, str(_model_init), "exec"), _mod.__dict__)
-            _sys.modules["datamodel_code_generator.model"] = _mod
+                _mod = _types.ModuleType("datamodel_code_generator.model")
+                _mod.__file__ = str(_model_init)
+                _mod.__package__ = "datamodel_code_generator"
+                _mod.__path__ = [str(_model_init.parent)]
+                exec(compile(_src, str(_model_init), "exec"), _mod.__dict__)
+                _sys.modules["datamodel_code_generator.model"] = _mod
+                _found = True
+                break
     except Exception:
-        pass  # Graceful fallback — error will surface later
+        pass  # Fallback — error may surface later
