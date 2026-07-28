@@ -82,20 +82,53 @@ if _sys.version_info[:2] == (3, 14):
                 _init = _pl.Path(_p) / "datamodel_code_generator" / "model" / "__init__.py"
                 if _init.exists():
                     _orig_src = _init.read_text()
-                    _patched = _orig_src + """
-if not hasattr(PythonVersion, '_missing_'):
-    @classmethod
-    def _missing_(cls, value):
-        for member in cls:
-            return member
-        return None
-    PythonVersion._missing_ = _missing_
-    PythonVersion._value2member_map_["3.14"] = PythonVersion("3.12")
-    PythonVersion._member_names_.append("3_14")
-"""
+
+                    # Patch 1: add _missing_ to PythonVersion class
+                    # Find the class definition and inject _missing_ before the
+                    # first non-indented line after the class (which is the
+                    # DEFAULT_TARGET_PYTHON_VERSION line that crashes).
+                    _class_match = __import__("re").search(
+                        r"class PythonVersion\(.*?\bStrEnum\b.*?\):\n",
+                        _orig_src,
+                    )
+                    if _class_match:
+                        _after_class = _orig_src[_class_match.end():]
+                        _body_end = __import__("re").search(r"\n(?=\S)", _after_class)
+                        if _body_end:
+                            _inject = (
+                                "\n"
+                                "    @classmethod\n"
+                                '    def _missing_(cls, value):\n'
+                                "        for member in cls:\n"
+                                "            return member\n"
+                                "        return None\n"
+                                "\n"
+                            )
+                            _insert_pos = _class_match.end() + _body_end.start()
+                            _orig_src = (
+                                _orig_src[:_insert_pos]
+                                + _inject
+                                + _orig_src[_insert_pos:]
+                            )
+
+                    # Patch 2: wrap the crashing DEFAULT_TARGET line in try/except
+                    _orig_src = __import__("re").sub(
+                        r"^DEFAULT_TARGET_PYTHON_VERSION = "
+                        r'PythonVersion\(f"{sys\.version_info\.major}\.{sys\.version_info\.minor}"\)$',
+                        (
+                            r'try:\n'
+                            r"    DEFAULT_TARGET_PYTHON_VERSION = "
+                            r'PythonVersion(f"{sys.version_info.major}.{sys.version_info.minor}")\n'
+                            r'except ValueError:\n'
+                            r"    DEFAULT_TARGET_PYTHON_VERSION = '3.12'\n"
+                        ),
+                        _orig_src,
+                        flags=__import__("re").MULTILINE,
+                    )
+
                     return _mach.ModuleSpec(
                         fullname,
-                        _PatchedLoader(_init, _patched),
+                        _PatchedLoader(_init, _orig_src),
                         is_package=True,
                     )
             return None
