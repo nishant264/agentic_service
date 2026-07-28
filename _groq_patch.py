@@ -77,24 +77,26 @@ if _sys.version_info[:2] == (3, 14):
             if fullname != "datamodel_code_generator.model":
                 return None
 
-            # Locate the real module file
             for _p in _sys.path:
                 _init = _pl.Path(_p) / "datamodel_code_generator" / "model" / "__init__.py"
                 if _init.exists():
-                    _orig_src = _init.read_text()
+                    _src = _init.read_text()
 
-                    # Patch 1: add _missing_ to PythonVersion class
-                    # Find the class definition and inject _missing_ before the
-                    # first non-indented line after the class (which is the
-                    # DEFAULT_TARGET_PYTHON_VERSION line that crashes).
-                    _class_match = __import__("re").search(
-                        r"class PythonVersion\(.*?\bStrEnum\b.*?\):\n",
-                        _orig_src,
-                    )
-                    if _class_match:
-                        _after_class = _orig_src[_class_match.end():]
-                        _body_end = __import__("re").search(r"\n(?=\S)", _after_class)
-                        if _body_end:
+                    # Inject _missing_ into the PythonVersion class body
+                    # Find "class PythonVersion(" and add _missing_ right before
+                    # the next top-level statement
+                    _cls_marker = "class PythonVersion("
+                    _cls_idx = _src.find(_cls_marker)
+                    if _cls_idx >= 0:
+                        _after_header = _src.find("\n", _cls_idx) + 1
+                        # Find next line that starts at column 0 (end of class body)
+                        _rest = _src[_after_header:]
+                        _next_top = -1
+                        for _i, _ch in enumerate(_rest):
+                            if _ch == "\n" and _i + 1 < len(_rest) and _rest[_i + 1] not in (" ", "\t", "\n", "#"):
+                                _next_top = _after_header + _i + 1
+                                break
+                        if _next_top > 0:
                             _inject = (
                                 "\n"
                                 "    @classmethod\n"
@@ -104,31 +106,21 @@ if _sys.version_info[:2] == (3, 14):
                                 "        return None\n"
                                 "\n"
                             )
-                            _insert_pos = _class_match.end() + _body_end.start()
-                            _orig_src = (
-                                _orig_src[:_insert_pos]
-                                + _inject
-                                + _orig_src[_insert_pos:]
-                            )
+                            _src = _src[:_next_top] + _inject + _src[_next_top:]
 
-                    # Patch 2: wrap the crashing DEFAULT_TARGET line in try/except
-                    _orig_src = __import__("re").sub(
-                        r"^DEFAULT_TARGET_PYTHON_VERSION = "
-                        r'PythonVersion\(f"{sys\.version_info\.major}\.{sys\.version_info\.minor}"\)$',
-                        (
-                            r'try:\n'
-                            r"    DEFAULT_TARGET_PYTHON_VERSION = "
-                            r'PythonVersion(f"{sys.version_info.major}.{sys.version_info.minor}")\n'
-                            r'except ValueError:\n'
-                            r"    DEFAULT_TARGET_PYTHON_VERSION = '3.12'\n"
-                        ),
-                        _orig_src,
-                        flags=__import__("re").MULTILINE,
+                    # Wrap the crashing DEFAULT_TARGET line in try/except
+                    _old_line = 'DEFAULT_TARGET_PYTHON_VERSION = PythonVersion(f"{sys.version_info.major}.{sys.version_info.minor}")'
+                    _new_block = (
+                        "try:\n"
+                        f"    {_old_line}\n"
+                        'except ValueError:\n'
+                        "    DEFAULT_TARGET_PYTHON_VERSION = '3.12'\n"
                     )
+                    _src = _src.replace(_old_line, _new_block)
 
                     return _mach.ModuleSpec(
                         fullname,
-                        _PatchedLoader(_init, _orig_src),
+                        _PatchedLoader(_init, _src),
                         is_package=True,
                     )
             return None
