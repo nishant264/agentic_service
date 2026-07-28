@@ -11,6 +11,9 @@ Usage:
 import os
 import time
 
+# ── Apply Groq compatibility patch BEFORE any agency-swarm imports ────
+import _groq_patch  # noqa: F401 (sets OPENAI_BASE_URL, fixes InputTokensDetails)
+
 import streamlit as st
 
 from backend_swarm import agency, product_manager, systems_architect, devops_engineer
@@ -81,15 +84,19 @@ init_state()
 with st.sidebar:
     st.markdown("### 🔑 API Configuration")
 
-    groq_api_key = st.text_input(
-        "Groq API Key",
-        type="password",
-        help="Free key from console.groq.com — used only for this session.",
-        placeholder="gsk-...",
-    )
+    # Auto-read Groq key from environment (Streamlit secrets on cloud)
+    groq_api_key = os.environ.get("GROQ_API_KEY", "")
+
+    # Fallback: manual input for local dev
+    if not groq_api_key:
+        groq_api_key = st.text_input(
+            "Groq API Key",
+            type="password",
+            help="Free key from console.groq.com — used only for this session.",
+            placeholder="gsk-...",
+        )
 
     if groq_api_key:
-        # Configure Groq as the LLM backend
         os.environ["OPENAI_API_KEY"] = groq_api_key
         os.environ["OPENAI_BASE_URL"] = "https://api.groq.com/openai/v1"
         st.session_state.api_key_set = True
