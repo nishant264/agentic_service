@@ -64,47 +64,51 @@ except Exception:
 
 # ── Step 3: Fix datamodel-code-generator for Python 3.14 ────────────────
 # Python 3.14 isn't in datamodel_code_generator's PythonVersion enum yet.
-# We scan sys.path for the module file and pre-load a patched version.
+# We use a MetaPathFinder to intercept the import and patch the module.
 import sys as _sys
 
 if _sys.version_info[:2] == (3, 14):
-    _found = False
-    try:
-        import pathlib as _pathlib
-        import types as _types
+    import importlib.abc as _abc
+    import importlib.machinery as _mach
+    import pathlib as _pl
 
-        for _p in _sys.path:
-            _model_init = (
-                _pathlib.Path(_p)
-                / "datamodel_code_generator"
-                / "model"
-                / "__init__.py"
-            )
-            if _model_init.exists():
-                _src = _model_init.read_text()
-                # Add a _missing_ hook so PythonVersion("3.14") succeeds
-                _src += """
-try:
-    PythonVersion("3.14")
-except ValueError:
-    if not hasattr(PythonVersion, "_missing_"):
-        @classmethod
-        def _missing_(cls, value):
-            for member in cls:
-                return member
-            return None
-        PythonVersion._missing_ = _missing_
-        PythonVersion._value2member_map_["3.14"] = PythonVersion("3.12")
-        PythonVersion._member_names_.append("3_14")
+    class _DCMFixer(_abc.MetaPathFinder):
+        def find_spec(self, fullname, _path, _target=None):
+            if fullname != "datamodel_code_generator.model":
+                return None
+
+            # Locate the real module file
+            for _p in _sys.path:
+                _init = _pl.Path(_p) / "datamodel_code_generator" / "model" / "__init__.py"
+                if _init.exists():
+                    _orig_src = _init.read_text()
+                    _patched = _orig_src + """
+if not hasattr(PythonVersion, '_missing_'):
+    @classmethod
+    def _missing_(cls, value):
+        for member in cls:
+            return member
+        return None
+    PythonVersion._missing_ = _missing_
+    PythonVersion._value2member_map_["3.14"] = PythonVersion("3.12")
+    PythonVersion._member_names_.append("3_14")
 """
+                    return _mach.ModuleSpec(
+                        fullname,
+                        _PatchedLoader(_init, _patched),
+                        is_package=True,
+                    )
+            return None
 
-                _mod = _types.ModuleType("datamodel_code_generator.model")
-                _mod.__file__ = str(_model_init)
-                _mod.__package__ = "datamodel_code_generator"
-                _mod.__path__ = [str(_model_init.parent)]
-                exec(compile(_src, str(_model_init), "exec"), _mod.__dict__)
-                _sys.modules["datamodel_code_generator.model"] = _mod
-                _found = True
-                break
-    except Exception:
-        pass  # Fallback — error may surface later
+    class _PatchedLoader(_abc.Loader):
+        def __init__(self, path, patched_source):
+            self.path = path
+            self.patched_source = patched_source
+
+        def create_module(self, spec):
+            return None  # Use default module creation
+
+        def exec_module(self, module):
+            exec(compile(self.patched_source, str(self.path), "exec"), module.__dict__)
+
+    _sys.meta_path.insert(0, _DCMFixer())
