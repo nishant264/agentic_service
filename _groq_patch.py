@@ -63,74 +63,29 @@ except Exception:
     pass  # Graceful fallback for any other incompatibility
 
 # ── Step 3: Fix datamodel-code-generator for Python 3.14 ────────────────
-# Python 3.14 isn't in datamodel_code_generator's PythonVersion enum yet.
-# We use a MetaPathFinder to intercept the import and patch the module.
+# Python 3.14 isn't in PythonVersion enum yet. Since PythonVersion lives
+# in the parent package (datamodel_code_generator), we patch it directly
+# before any submodule tries to use PythonVersion("3.14").
 import sys as _sys
 
 if _sys.version_info[:2] == (3, 14):
-    import importlib.abc as _abc
-    import importlib.machinery as _mach
-    import pathlib as _pl
+    try:
+        import datamodel_code_generator as _dcg
+        _PV = _dcg.PythonVersion
 
-    class _DCMFixer(_abc.MetaPathFinder):
-        def find_spec(self, fullname, _path, _target=None):
-            if fullname != "datamodel_code_generator.model":
-                return None
+        try:
+            _PV("3.14")
+        except ValueError:
+            if not hasattr(_PV, "_missing_"):
+                @classmethod
+                def _missing_(cls, value):
+                    for member in cls:
+                        return member
+                    return None
+                _PV._missing_ = _missing_
 
-            # Use the standard path finder to get a fully-formed spec
-            spec = _mach.PathFinder.find_spec(fullname, _path, _target)
-            if spec is None or not spec.origin:
-                return None
-
-            _init = _pl.Path(spec.origin)
-            _src = _init.read_text()
-
-            # Inject _missing_ into the PythonVersion class body
-            _cls_marker = "class PythonVersion("
-            _cls_idx = _src.find(_cls_marker)
-            if _cls_idx >= 0:
-                _after_header = _src.find("\n", _cls_idx) + 1
-                _rest = _src[_after_header:]
-                _next_top = -1
-                for _i, _ch in enumerate(_rest):
-                    if _ch == "\n" and _i + 1 < len(_rest) and _rest[_i + 1] not in (" ", "\t", "\n", "#"):
-                        _next_top = _after_header + _i + 1
-                        break
-                if _next_top > 0:
-                    _inject = (
-                        "\n"
-                        "    @classmethod\n"
-                        '    def _missing_(cls, value):\n'
-                        "        for member in cls:\n"
-                        "            return member\n"
-                        "        return None\n"
-                        "\n"
-                    )
-                    _src = _src[:_next_top] + _inject + _src[_next_top:]
-
-            # Wrap the crashing DEFAULT_TARGET line in try/except
-            _old_line = 'DEFAULT_TARGET_PYTHON_VERSION = PythonVersion(f"{sys.version_info.major}.{sys.version_info.minor}")'
-            _new_block = (
-                "try:\n"
-                f"    {_old_line}\n"
-                'except ValueError:\n'
-                "    DEFAULT_TARGET_PYTHON_VERSION = '3.12'\n"
-            )
-            _src = _src.replace(_old_line, _new_block)
-
-            # Use the original spec but with a patched loader
-            spec.loader = _PatchedLoader(_init, _src)
-            return spec
-
-    class _PatchedLoader(_abc.Loader):
-        def __init__(self, path, patched_source):
-            self.path = path
-            self.patched_source = patched_source
-
-        def create_module(self, spec):
-            return None  # Use default module creation
-
-        def exec_module(self, module):
-            exec(compile(self.patched_source, str(self.path), "exec"), module.__dict__)
-
-    _sys.meta_path.insert(0, _DCMFixer())
+            _PV._value2member_map_["3.14"] = _PV("3.12")
+            _PV._member_names_.append("PY_314")
+            _PV._member_map_["PY_314"] = _PV("3.12")
+    except Exception:
+        pass  # Graceful fallback — error may surface later
